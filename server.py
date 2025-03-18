@@ -3,7 +3,7 @@ import sys
 import datetime
 import time
 
-# load credentials informatin from local directory to a dictionary data structure
+# Load credentials from file into a dictionary
 def load_credentials(credentials_file):
     credentials = {}
     with open(credentials_file, 'r') as f:
@@ -12,206 +12,199 @@ def load_credentials(credentials_file):
             credentials[username] = password
     return credentials
 
-# display message received from clients for logging and debugging
-def display_msg_recieved(client_port, request_type, username):
+# Logging functions
+def display_msg_received(client_port, request_type, username):
     current_time = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    msg = f"Received {request_type} from {username}"
-    print(f"{current_time}: {client_port}: {msg}")
+    print(f"{current_time}: {client_port}: Received {request_type} from {username}")
 
-# display message sent to clients for logging and debugging
 def display_msg_sent(client_port, response_type, username):
     current_time = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    msg = f"Sent {response_type} to {username}"
-    print(f"{current_time}: {client_port}: {msg}")
+    print(f"{current_time}: {client_port}: Sent {response_type} to {username}")
 
-# refresh the active_clients sets using the most recent heartbeats_record
+# Check if a user is active
 def check_active(username):
-    if username not in heartbeats_record:
+    last_heartbeat_time = heartbeats_record.get(username, 0)
+    if username in active_clients and (time.time() - last_heartbeat_time) > 3:
+        active_clients.remove(username)
         return False
-    
-    last_heartbeat_time = heartbeats_record[username]
-    current_time = time.time()
+    return username in active_clients
 
-    if username in active_clients:
-        if (current_time - last_heartbeat_time) > 3:
-            active_clients.remove(username)
-            return False
-        else:
-            return True
-    else:
-        False
-
-# validate if the credentials sent by the client matches server's dictionary
+# Validate user credentials
 def check_credentials(username, password):
-    return username in credentials and credentials[username] == password
+    return credentials.get(username) == password
 
-def receive_request(request_type):
-    client_port = client_address[1]
-    username = client_request[1]
-    display_msg_recieved(client_port, request_type, username)
+# Receive request helper
+def receive_request(client_request):
+    if len(client_request) < 2:
+        return None, None  # Invalid request
+    return client_request[0], client_request[1]
 
-def send_response(response_type, response_content):
+# Send response helper
+def send_response(client_port, response_type, username, response_content=""):
     response = f"{response_type} {response_content}"
     server_socket.sendto(response.encode(), client_address)
     display_msg_sent(client_port, response_type, username)
 
+# Handle AUTH request
 def handle_AUTH():
-    receive_request("AUTH")
-    username = client_request[1]
-    password = client_request[2]
+    request_type, username = receive_request(client_request)
+    display_msg_received(client_port, request_type, username)
 
+    if len(client_request) < 3:
+        send_response(client_port, "ERR", username)
+        return
+
+    password = client_request[2]
     response_type = "ERR"
+
     if not check_active(username) and check_credentials(username, password):
         response_type = "OK"
         active_clients.add(username)
-        heartbeats_record[username] = time.time() # auth treated as a heartbeat
+        heartbeats_record[username] = time.time()  # Authentication acts as a heartbeat
 
-    response_content = ''
-    send_response(response_type, response_content)
+    send_response(client_port, response_type, username)
 
+# Handle HBT (Heartbeat)
 def handle_HBT():
-    receive_request("HBT")
+    request_type, username = receive_request(client_request)
+    display_msg_received(client_port, request_type, username)
+
+    if len(client_request) < 3:
+        send_response(client_port, "ERR", username)
+        return
+
     heartbeats_record[username] = time.time()
+    contact_book[username] = client_request[2]  # Welcoming port number
 
-    welcoming_port_number = client_request[2]
-    contact_book[username] = welcoming_port_number
-    # print(contact_book)
-
+# Handle LAP (List Active Peers)
 def handle_LAP():
-    receive_request("LAP")
+    request_type, username = receive_request(client_request)
+    display_msg_received(client_port, request_type, username)
 
-    for username in active_clients:
-        check_active(username)
-        if username not in active_clients:
-            break
+    # Refresh active_clients set
+    for user in list(active_clients):
+        check_active(user)
 
-    response_type = "OK"
-    response_content = f"{len(active_clients)} " + " ".join(str(c) for c in active_clients)
-    send_response(response_type, response_content)
+    response_content = f"{len(active_clients)} " + " ".join(active_clients)
+    send_response(client_port, "OK", username, response_content)
 
+# Handle LPF (List Published Files)
 def handle_LPF():
-    receive_request("LPF")
-    
-    files_that_I_publish = file_publishing_users[username]
-    
-    response_type = "OK"
-    response_content = f"{len(files_that_I_publish)} " + " ".join(str(f) for f in files_that_I_publish)
-    send_response(response_type, response_content)
+    request_type, username = receive_request(client_request)
+    display_msg_received(client_port, request_type, username)
 
+    files = file_publishing_users.get(username, set())
+    response_content = f"{len(files)} " + " ".join(files)
+    send_response(client_port, "OK", username, response_content)
+
+# Handle PUB (Publish File)
 def handle_PUB():
-    receive_request("PUB")
+    request_type, username = receive_request(client_request)
+    display_msg_received(client_port, request_type, username)
+
+    if len(client_request) < 3:
+        send_response(client_port, "ERR", username)
+        return
+
     filename = client_request[2]
-    
-    if filename not in published_files:
-        published_files[filename] = set()
+    published_files.setdefault(filename, set()).add(username)
+    file_publishing_users.setdefault(username, set()).add(filename)
 
-    published_files[filename].add(username)
-    file_publishing_users[username].add(filename)
+    send_response(client_port, "OK", username)
 
-    response_type = "OK"
-    response_content = ''
-    send_response(response_type, response_content)
-
+# Handle UNP (Unpublish File)
 def handle_UNP():
-    receive_request("UNP")
-    filename = client_request[2]
+    request_type, username = receive_request(client_request)
+    display_msg_received(client_port, request_type, username)
 
-    response_type = "ERR"
-    if filename in file_publishing_users[username]:
+    if len(client_request) < 3:
+        send_response(client_port, "ERR", username)
+        return
+
+    filename = client_request[2]
+    if filename in file_publishing_users.get(username, set()):
         file_publishing_users[username].remove(filename)
-        published_files[filename].remove(username)
-        response_type = "OK"
+        published_files[filename].discard(username)
+        send_response(client_port, "OK", username)
+    else:
+        send_response(client_port, "ERR", username)
 
-    response_content = ''
-    send_response(response_type, response_content)
-
+# Handle SCH (Search File)
 def handle_SCH():
-    receive_request("SCH")
+    request_type, username = receive_request(client_request)
+    display_msg_received(client_port, request_type, username)
+
+    if len(client_request) < 3:
+        send_response(client_port, "ERR", username)
+        return
+
     substring = client_request[2]
-    list_of_files_found = str()
-    number_of_files_found = 0
-    response_type = 'OK'
-    files_found = set()
-    # print(substring)
-
-    for user in active_clients:
-        # print(active_clients)
-        if user == username:
-            # print('HEY')
-            continue
-        for filename in file_publishing_users[user]:
-            if substring in filename:
-                if filename not in file_publishing_users[username]:
-                    if filename in files_found:
-                        continue
-                    else:
-                        files_found.add(filename)
-                    list_of_files_found += ' '
-                    list_of_files_found += filename
-                    number_of_files_found += 1
-                    # response_type = 'OK'
+    found_files = {file for user in active_clients if user != username for file in file_publishing_users.get(user, set()) if substring in file}
     
-    response_content = f'{number_of_files_found}{list_of_files_found}'
-    send_response(response_type, response_content)
+    response_content = f"{len(found_files)} " + " ".join(found_files)
+    send_response(client_port, "OK", username, response_content)
 
-
+# Handle GET (Retrieve File Owner)
 def handle_GET():
-    receive_request("GET")
+    request_type, username = receive_request(client_request)
+    display_msg_received(client_port, request_type, username)
+
+    if len(client_request) < 3:
+        send_response(client_port, "ERR", username)
+        return
+
     filename = client_request[2]
-    response_type = 'ERR'
-    arbitary_available_user = ''
-    address_of_available_user = ''
+    available_users = published_files.get(filename, set())
 
-    for file, available_users in published_files.items():
-        if file == filename and available_users != set():
-            arbitary_available_user = next(iter(available_users))
-            if arbitary_available_user in active_clients and arbitary_available_user != username:
-                response_type = 'OK'
-                address_of_available_user = contact_book[arbitary_available_user]
-                break
+    for user in available_users:
+        if user in active_clients and user != username:
+            send_response(client_port, "OK", username, f"{user} {contact_book.get(user, '')}")
+            return
 
-    response_content = f'{arbitary_available_user} {address_of_available_user}'
-    send_response(response_type, response_content)
+    send_response(client_port, "ERR", username)
 
+# Server setup
 server_port = int(sys.argv[1])
 server_IP = '127.0.0.1'
 server_address = (server_IP, server_port)
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 server_socket.bind(server_address)
 
-credentials = load_credentials('credentials.txt') # credentials dict for easier authentication
-active_clients = set() # a set for unique usernames
-heartbeats_record = {username: 0 for username in credentials}  # last heartbeat time for each user, initialised to be 0
-published_files = {} # <filename: {set of clients with this file avaliable}>
-file_publishing_users = {username: set() for username in credentials} # <username: {set of files published by this user}>
-contact_book = {} # <username(could be offline): (last known) welcoming port number>
+credentials = load_credentials('credentials.txt')                       # credentials dict for easier authentication
+active_clients = set()                                                  # a set for unique usernames
+heartbeats_record = {username: 0 for username in credentials}           # last heartbeat time for each user, initialised to be 0
+published_files = {}                                                    # <filename: {set of clients with this file avaliable}>
+file_publishing_users = {username: set() for username in credentials}   # <username: {set of files published by this user}>
+contact_book = {}                                                       # <username(could be offline): (last known) welcoming port number>
 
 print("Server is now online")
 while True:
-    
-    for user in active_clients.copy():
+    for user in list(active_clients):
         check_active(user)
 
     client_request, client_address = server_socket.recvfrom(1024)
     client_request = client_request.decode().split(' ')
     client_port = client_address[1]
-    username = client_request[1]
-    request_type = client_request[0]
-    match request_type:
-        case "AUTH":
-            handle_AUTH()
-        case "HBT":
-            handle_HBT()
-        case "LAP":
-            handle_LAP()
-        case "LPF":
-            handle_LPF()
-        case "PUB":
-            handle_PUB()
-        case "UNP":
-            handle_UNP()
-        case "SCH":
-            handle_SCH()
-        case "GET":
-            handle_GET()
 
+    if len(client_request) < 2:
+        continue  # Skip malformed requests
+
+    request_type = client_request[0]
+    username = client_request[1]
+
+    handlers = {
+        "AUTH": handle_AUTH,
+        "HBT": handle_HBT,
+        "LAP": handle_LAP,
+        "LPF": handle_LPF,
+        "PUB": handle_PUB,
+        "UNP": handle_UNP,
+        "SCH": handle_SCH,
+        "GET": handle_GET,
+    }
+
+    handler = handlers.get(request_type)
+    if handler:
+        handler()
+    else:
+        send_response(client_port, "ERR", username, "Invalid request")
