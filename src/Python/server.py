@@ -2,6 +2,28 @@ import socket
 import sys
 import datetime
 import time
+import signal
+import threading
+
+# === Globals ===
+running = True
+server_socket = None
+
+# Signal handler
+def graceful_shutdown(signum, frame):
+    global running, server_socket
+    print("\nShutting down server gracefully...")
+    running = False
+
+    # Close the socket to unblock recvfrom
+    if server_socket:
+        server_socket.close()
+    print("Server socket closed. Exiting...")
+    sys.exit(0)
+
+# Register signals
+signal.signal(signal.SIGINT, graceful_shutdown)
+signal.signal(signal.SIGTERM, graceful_shutdown)
 
 # Load credentials from file into a dictionary
 def load_credentials(credentials_file):
@@ -74,7 +96,7 @@ def handle_HBT():
         return
 
     heartbeats_record[username] = time.time()
-    contact_book[username] = client_request[2]  # Welcoming port number
+    contact_book[username] = int(client_request[2])  # Welcoming port number
 
 # Handle LAP (List Active Peers)
 def handle_LAP():
@@ -178,16 +200,23 @@ file_publishing_users = {username: set() for username in credentials}   # <usern
 contact_book = {}                                                       # <username(could be offline): (last known) welcoming port number>
 
 print("Server is now online")
-while True:
+
+# === Main loop ===
+while running:
     for user in list(active_clients):
         check_active(user)
 
-    client_request, client_address = server_socket.recvfrom(1024)
+    try:
+        client_request, client_address = server_socket.recvfrom(1024)
+    except OSError:
+        # Socket closed, exit gracefully
+        break
+
     client_request = client_request.decode().split(' ')
     client_port = client_address[1]
 
     if len(client_request) < 2:
-        continue  # Skip malformed requests
+        continue
 
     request_type = client_request[0]
     username = client_request[1]
@@ -205,6 +234,7 @@ while True:
 
     handler = handlers.get(request_type)
     if handler:
-        handler()
+        # Optional: run in a thread for each request
+        threading.Thread(target=handler).start()
     else:
         send_response(client_port, "ERR", username, "Invalid request")
